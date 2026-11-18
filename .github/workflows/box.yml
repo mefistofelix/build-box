@@ -1,4 +1,5 @@
 name: box
+run-name: box ${{ inputs.job }}
 # A blind build machine. The input is an encrypted 7z archive (file names encrypted too) uploaded to the release
 # "inbox" as in-<job>.7z. It is opened with the BOX_PASSWORD secret, its build.sh runs with all its output written to a
 # log inside the result, and the result folder is encrypted the same way and attached to the release "outbox" as
