@@ -1,0 +1,82 @@
+name: box
+# A blind build machine. The input is an encrypted 7z archive (file names encrypted too) uploaded to the release
+# "inbox" as in-<job>.7z. It is opened with the BOX_PASSWORD secret, its build.sh runs with all its output written to a
+# log inside the result, and the result folder is encrypted the same way and attached to the release "outbox" as
+# out-<job>.7z. The public log only says whether it worked. Nothing readable is ever stored here.
+on:
+  workflow_dispatch:
+    inputs:
+      job:
+        description: job id (letters, digits, dashes)
+        required: true
+      setup:
+        description: toolchains to prepare, space separated (java android)
+        required: false
+        default: ''
+      cache:
+        description: cache key for $CACHE (empty = no cache)
+        required: false
+        default: ''
+permissions:
+  contents: write
+concurrency:
+  group: box-${{ inputs.job }}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      JOB: ${{ inputs.job }}
+      SETUP: ${{ inputs.setup }}
+      GH_TOKEN: ${{ github.token }}
+      BOX_PASSWORD: ${{ secrets.BOX_PASSWORD }}
+    steps:
+      - name: check the job id
+        run: |
+          case "$JOB" in *[!A-Za-z0-9-]*|'') echo "bad job id"; exit 1;; esac
+      - if: contains(inputs.setup, 'java')
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - if: contains(inputs.setup, 'android')
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - if: inputs.cache != ''
+        uses: actions/cache@v4
+        with:
+          path: ~/cache
+          key: ${{ inputs.cache }}-${{ github.run_id }}
+          restore-keys: ${{ inputs.cache }}-
+      - name: open
+        run: |
+          set -e
+          gh release download inbox -R "$GITHUB_REPOSITORY" -p "in-$JOB.7z" -D "$RUNNER_TEMP" > /dev/null 2>&1
+          gh release delete-asset inbox "in-$JOB.7z" -R "$GITHUB_REPOSITORY" -y > /dev/null 2>&1 || true
+          mkdir -p "$RUNNER_TEMP/src" "$RUNNER_TEMP/out" ~/cache
+          7z x -y -p"$BOX_PASSWORD" -o"$RUNNER_TEMP/src" "$RUNNER_TEMP/in-$JOB.7z" > /dev/null 2>&1
+          rm -f "$RUNNER_TEMP/in-$JOB.7z"
+      - name: build
+        id: build
+        run: |
+          cd "$RUNNER_TEMP/src"
+          status=0
+          OUT="$RUNNER_TEMP/out" CACHE="$HOME/cache" bash ./build.sh > "$RUNNER_TEMP/out/build.log" 2>&1 || status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "build finished"
+      - name: seal
+        if: always()
+        run: |
+          set -e
+          cd "$RUNNER_TEMP/out"
+          7z a -y -mhe=on -p"$BOX_PASSWORD" "$RUNNER_TEMP/out-$JOB.7z" . > /dev/null 2>&1
+          gh release upload outbox "$RUNNER_TEMP/out-$JOB.7z" -R "$GITHUB_REPOSITORY" --clobber > /dev/null 2>&1
+          rm -rf "$RUNNER_TEMP/src" "$RUNNER_TEMP/out" "$RUNNER_TEMP/out-$JOB.7z"
+      - name: result
+        if: always()
+        env:
+          STATUS: ${{ steps.build.outputs.status }}
+        run: |
+          if [ "$STATUS" = "0" ]; then echo "ok"; else echo "failed"; exit 1; fi
