@@ -35,6 +35,10 @@ on:
         description: cache key for $CACHE (empty = no cache; opaque, it is public)
         required: false
         default: ''
+      cache_save:
+        description: when $CACHE is saved back (success, always, never)
+        required: false
+        default: success
       timeout:
         description: minutes before the build is stopped
         required: false
@@ -76,8 +80,10 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ inputs.python }}
+      # $CACHE: the newest saved copy for this key, OS and architecture comes back; it is saved again as a new copy
+      # (GitHub keeps the most recent ones, up to 10 GB for the repository, and drops copies unused for 7 days)
       - if: inputs.cache != ''
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ~/cache
           key: ${{ inputs.cache }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
@@ -104,6 +110,11 @@ jobs:
           OUT="$RUNNER_TEMP/out" CACHE="$HOME/cache" bash ./build.sh > "$RUNNER_TEMP/out/build.log" 2>&1 || status=$?
           echo "status=$status" >> "$GITHUB_OUTPUT"
           echo "build finished"
+      - if: always() && inputs.cache != '' && (inputs.cache_save == 'always' || (inputs.cache_save == 'success' && steps.build.outputs.status == '0'))
+        uses: actions/cache/save@v4
+        with:
+          path: ~/cache
+          key: ${{ inputs.cache }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
       - name: seal
         if: always()
         run: |

@@ -14,10 +14,12 @@ without giving the public repository anything readable; this repository never na
 2. It attaches the archive to the release `inbox`, then starts the workflow with `gh workflow run`. The run
    is found again by its title, `box <job>` (`run-name`).
 3. The workflow, on the runner the input `runner` names: prepares the toolchains asked for in `setup`,
-   restores `~/cache` (key: the opaque cache name plus OS and architecture), downloads the archive and
+   restores `~/cache` (`actions/cache/restore`: the newest copy whose key starts with the opaque cache name
+   plus OS and architecture), downloads the archive and
    deletes it from `inbox`, opens it in `$RUNNER_TEMP/src`, runs `bash ./build.sh` there with `OUT` and
    `CACHE` set and all its output written to `$OUT/build.log`, then encrypts `$OUT` the same way into
-   `out-<job>.7z` on the release `outbox`, deletes its working folders and fails if the build failed.
+   `out-<job>.7z` on the release `outbox` (before that, `actions/cache/save` stores `~/cache` under the key
+   `<cache>-<os>-<arch>-<run id>` when `cache_save` says so: `success`, `always` or `never`), deletes its working folders and fails if the build failed.
 4. `box.sh` waits, downloads and deletes `out-<job>.7z`, opens it into the result folder and, if the build
    failed, prints the end of `build.log`.
 

@@ -7,18 +7,19 @@
 #   --setup "LIST"   toolchains: java android node python
 #   --java V --node V --python V   versions for --setup
 #   --cache NAME     keep $CACHE between runs under this name (the public key is a hash of it, not the name)
+#   --cache-save W   when $CACHE is saved back: success (default), always (also after a failed build), never
 #   --timeout MIN    stop the build after these minutes (default 90)
 #   --repo OWNER/NAME   the build machine (default mefistofelix/build-box)
 # Needs: bash, gh (logged in), 7z (or 7zz), sha256sum. Exit status: 0 built, 1 build failed (log printed), 2 usage.
 # The result folder gets what build.sh put in $OUT plus build.log.
 set -e
-[ $# -ge 3 ] || { sed -n 2,14p "$0"; exit 2; }
+[ $# -ge 3 ] || { sed -n 2,15p "$0"; exit 2; }
 SRC="$1"; PASSFILE="$2"; RESULT="$3"; shift 3
-RUNNER=ubuntu-latest; SETUP=""; JAVA=17; NODE=22; PYTHON=3.12; CACHE=""; TIMEOUT=90; REPO=mefistofelix/build-box
+RUNNER=ubuntu-latest; SETUP=""; JAVA=17; NODE=22; PYTHON=3.12; CACHE=""; CACHESAVE=success; TIMEOUT=90; REPO=mefistofelix/build-box
 while [ $# -gt 0 ]; do
   case "$1" in
     --runner) RUNNER="$2";; --setup) SETUP="$2";; --java) JAVA="$2";; --node) NODE="$2";; --python) PYTHON="$2";;
-    --cache) CACHE="$2";; --timeout) TIMEOUT="$2";; --repo) REPO="$2";; *) echo "unknown option $1"; exit 2;;
+    --cache) CACHE="$2";; --cache-save) CACHESAVE="$2";; --timeout) TIMEOUT="$2";; --repo) REPO="$2";; *) echo "unknown option $1"; exit 2;;
   esac; shift 2
 done
 [ -f "$SRC/build.sh" ] || { echo "$SRC has no build.sh"; exit 2; }
@@ -33,7 +34,7 @@ W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 (cd "$SRC" && "$SEVEN" a -y -mhe=on -mx=5 -p"$PASS" "$W/in-$JOB.7z" . > /dev/null)
 echo "packed $(du -h "$W/in-$JOB.7z" | cut -f1)"
 gh release upload inbox "$W/in-$JOB.7z" -R "$REPO" --clobber > /dev/null
-gh workflow run box.yml -R "$REPO" -f job="$JOB" -f runner="$RUNNER" -f setup="$SETUP" -f java="$JAVA" -f node="$NODE" -f python="$PYTHON" -f cache="$KEY" -f timeout="$TIMEOUT" > /dev/null
+gh workflow run box.yml -R "$REPO" -f job="$JOB" -f runner="$RUNNER" -f setup="$SETUP" -f java="$JAVA" -f node="$NODE" -f python="$PYTHON" -f cache="$KEY" -f cache_save="$CACHESAVE" -f timeout="$TIMEOUT" > /dev/null
 ID=""
 for i in $(seq 1 45); do ID="$(gh run list -R "$REPO" -w box.yml -L 20 --json databaseId,displayTitle -q ".[] | select(.displayTitle==\"box $JOB\") | .databaseId" | head -1)"; [ -n "$ID" ] && break; sleep 2; done
 [ -n "$ID" ] || { echo "the run did not start"; exit 1; }

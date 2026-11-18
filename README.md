@@ -22,7 +22,32 @@ bash box.sh path/to/folder path/to/password-file path/to/result --runner ubuntu-
 Options: `--runner` (any GitHub-hosted runner label: `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-24.04-arm`,
 `windows-latest`, `windows-2025`, `macos-latest`, `macos-15`...), `--setup` (`java`, `android`, `node`,
 `python`, with `--java`, `--node`, `--python` for the versions), `--cache NAME`, `--timeout MINUTES`,
-`--repo OWNER/NAME` for another copy of the machine.
+`--cache-save success|always|never`, `--repo OWNER/NAME` for another copy of the machine.
+
+## Keeping state between builds (`$CACHE`)
+
+`build.sh` gets `$CACHE`, a folder that survives from one build to the next when you pass `--cache NAME`.
+Put there whatever is slow to get again: downloaded toolchains and SDKs, dependencies, object files, a
+build tree. A typical `build.sh`:
+
+```bash
+mkdir -p "$CACHE/deps" "$CACHE/build"
+[ -d "$CACHE/deps/sdk" ] || download_sdk_into "$CACHE/deps/sdk"   # only the first time
+ln -sfn "$CACHE/build" build                                       # incremental: object files kept
+make -C build && cp build/app "$OUT/"
+```
+
+- **Restore**: before `build.sh` runs, the newest saved copy for the same name, operating system and
+  architecture is put back in `$CACHE` (a Linux and a Windows build of the same name keep separate copies).
+  The first build of a name starts with an empty folder.
+- **Save**: `--cache-save success` (default) saves `$CACHE` only when `build.sh` succeeded, `always` also
+  when it failed (useful for long builds: the part already done is not lost), `never` only reads it.
+- **Start again from empty**: use another name (`--cache NAME-v2`).
+- Paths: `$CACHE` is the same absolute path on every build of the same runner, so build trees that remember
+  absolute paths (CMake, Gradle) can live there, or be linked from the source folder as above.
+- Limits (GitHub's): 10 GB of caches per repository; the oldest are dropped first, and a copy unused for
+  7 days goes. Each save is a new copy, so a cache of a few hundred MB costs that much per build until old
+  copies are dropped.
 
 `build.sh` always runs in bash, also on Windows (Git Bash of the runner). The standard runners are free on
 a public repository; larger runners are not.
