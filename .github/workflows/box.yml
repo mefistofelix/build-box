@@ -1,34 +1,57 @@
 name: box
 run-name: box ${{ inputs.job }}
-# A blind build machine. The input is an encrypted 7z archive (file names encrypted too) uploaded to the release
-# "inbox" as in-<job>.7z. It is opened with the BOX_PASSWORD secret, its build.sh runs with all its output written to a
-# log inside the result, and the result folder is encrypted the same way and attached to the release "outbox" as
-# out-<job>.7z. The public log only says whether it worked. Nothing readable is ever stored here.
+# A blind build machine. See README.md (how to use it) and AGENTS.md (how it works and the rules for changing it).
+# The input is an encrypted 7z (file names encrypted too) attached to the release "inbox" as in-<job>.7z. It is
+# opened with the BOX_PASSWORD secret, its build.sh runs with all its output in a log inside the result, and the
+# result folder is encrypted the same way and attached to the release "outbox" as out-<job>.7z. The public log says
+# only whether it worked. Every input reaches the shell through an environment variable, never pasted into a command.
 on:
   workflow_dispatch:
     inputs:
       job:
-        description: job id (letters, digits, dashes)
+        description: job id (letters, digits, dashes; opaque, it is public)
         required: true
+      runner:
+        description: runner label (ubuntu-latest, ubuntu-24.04, windows-latest, windows-2025, macos-latest, macos-15, ubuntu-24.04-arm...)
+        required: false
+        default: ubuntu-latest
       setup:
-        description: toolchains to prepare, space separated (java android)
+        description: toolchains to prepare, space separated (java android node python)
         required: false
         default: ''
+      java:
+        description: Java version for setup java
+        required: false
+        default: '17'
+      node:
+        description: Node version for setup node
+        required: false
+        default: '22'
+      python:
+        description: Python version for setup python
+        required: false
+        default: '3.12'
       cache:
-        description: cache key for $CACHE (empty = no cache)
+        description: cache key for $CACHE (empty = no cache; opaque, it is public)
         required: false
         default: ''
+      timeout:
+        description: minutes before the build is stopped
+        required: false
+        default: '90'
 permissions:
   contents: write
 concurrency:
   group: box-${{ inputs.job }}
 jobs:
   build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ fromJSON(inputs.timeout) }}
+    defaults:
+      run:
+        shell: bash
     env:
       JOB: ${{ inputs.job }}
-      SETUP: ${{ inputs.setup }}
       GH_TOKEN: ${{ github.token }}
       BOX_PASSWORD: ${{ secrets.BOX_PASSWORD }}
     steps:
@@ -39,26 +62,40 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: ${{ inputs.java }}
       - if: contains(inputs.setup, 'android')
         uses: android-actions/setup-android@v3
         with:
           packages: platform-tools
           log-accepted-android-sdk-licenses: false
+      - if: contains(inputs.setup, 'node')
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node }}
+      - if: contains(inputs.setup, 'python')
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python }}
       - if: inputs.cache != ''
         uses: actions/cache@v4
         with:
           path: ~/cache
-          key: ${{ inputs.cache }}-${{ github.run_id }}
-          restore-keys: ${{ inputs.cache }}-
+          key: ${{ inputs.cache }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}
+          restore-keys: ${{ inputs.cache }}-${{ runner.os }}-${{ runner.arch }}-
       - name: open
         run: |
           set -e
-          gh release download inbox -R "$GITHUB_REPOSITORY" -p "in-$JOB.7z" -D "$RUNNER_TEMP" > /dev/null 2>&1
+          # 7-Zip is on the Windows and Linux images; a Mac image may lack it
+          if command -v 7z > /dev/null; then echo "SEVEN=7z" >> "$GITHUB_ENV"; elif command -v 7zz > /dev/null; then echo "SEVEN=7zz" >> "$GITHUB_ENV"; else brew install sevenzip > /dev/null 2>&1; echo "SEVEN=7zz" >> "$GITHUB_ENV"; fi
+      - name: unpack
+        run: |
+          set -e
+          T="$RUNNER_TEMP"
+          gh release download inbox -R "$GITHUB_REPOSITORY" -p "in-$JOB.7z" -D "$T" > /dev/null 2>&1
           gh release delete-asset inbox "in-$JOB.7z" -R "$GITHUB_REPOSITORY" -y > /dev/null 2>&1 || true
-          mkdir -p "$RUNNER_TEMP/src" "$RUNNER_TEMP/out" ~/cache
-          7z x -y -p"$BOX_PASSWORD" -o"$RUNNER_TEMP/src" "$RUNNER_TEMP/in-$JOB.7z" > /dev/null 2>&1
-          rm -f "$RUNNER_TEMP/in-$JOB.7z"
+          mkdir -p "$T/src" "$T/out" ~/cache
+          "$SEVEN" x -y -p"$BOX_PASSWORD" -o"$T/src" "$T/in-$JOB.7z" > /dev/null 2>&1
+          rm -f "$T/in-$JOB.7z"
       - name: build
         id: build
         run: |
@@ -71,10 +108,11 @@ jobs:
         if: always()
         run: |
           set -e
-          cd "$RUNNER_TEMP/out"
-          7z a -y -mhe=on -p"$BOX_PASSWORD" "$RUNNER_TEMP/out-$JOB.7z" . > /dev/null 2>&1
-          gh release upload outbox "$RUNNER_TEMP/out-$JOB.7z" -R "$GITHUB_REPOSITORY" --clobber > /dev/null 2>&1
-          rm -rf "$RUNNER_TEMP/src" "$RUNNER_TEMP/out" "$RUNNER_TEMP/out-$JOB.7z"
+          T="$RUNNER_TEMP"
+          mkdir -p "$T/out"
+          (cd "$T/out" && "$SEVEN" a -y -mhe=on -p"$BOX_PASSWORD" "$T/out-$JOB.7z" . > /dev/null 2>&1)
+          gh release upload outbox "$T/out-$JOB.7z" -R "$GITHUB_REPOSITORY" --clobber > /dev/null 2>&1
+          rm -rf "$T/src" "$T/out" "$T/out-$JOB.7z"
       - name: result
         if: always()
         env:
